@@ -1,0 +1,30 @@
+<inkscape-extension>
+  <_name>KiCad Footprint</_name>
+  <id>org.kicad.output.footprint</id>
+  <dependency type="extension">org.inkscape.output.svg.inkscape</dependency>
+  <dependency type="executable" location="extensions">kicad_output.py</dependency>
+  <dependency type="executable" location="extensions">inkex.py</dependency>
+  <dependency type="executable" location="extensions">simplepath.py</dependency>
+  <dependency type="executable" location="extensions">simpletransform.py</dependency>
+  <dependency type="executable" location="extensions">cubicsuperpath.py</dependency>
+  <dependency type="executable" location="extensions">cspsubdiv.py</dependency>
+  <param name="tab" type="notebook">
+    <page name="options" _gui-text="Options">
+      <param name="flatness" type="float" precision="2" min="0.01" max="100" gui-text="Subdivision Flatness">1</param>
+      <param name="description" type="string" gui-text="Description"/>
+      <param name="tags" type="string" gui-text="Tags">svg inkscape</param>
+      <param name="format" type="string" gui-hidden="true">footprint</pararm>
+    </page>
+  </param>
+  <output>
+    <extension>.kicad_mod</extension>
+    <mimetype>application/x-kicad-footprint</mimetype>
+    <_filetypename>KiCad Footprint (*.kicad_mod)</_filetypename>
+    <_filetypetooltip>KiCad Footprint</_filetypetooltip>
+    <dataloss>TRUE</dataloss>
+  </output>
+  <script>
+    <command reldir="extensions" interpreter="python">kicad_output.py</command>
+    <helper_extension>org.inkscape.output.svg.inkscape</helper_extension>
+  </script>
+</inkscape-extension>
