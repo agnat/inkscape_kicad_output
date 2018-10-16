@@ -313,16 +313,6 @@ def length(p1, p2):
   dy = p2[1] - p1[1]
   return math.sqrt(dx * dx + dy * dy)
 
-# given three colinear points p, q, r check if q lies on the line segment pr
-def on_segment(p, q, r):
-  for i in range(len(p)):
-    # XXX
-    # if not (q[i] <= max(p[i], r[i]) and q[i] >= min(p[i], r[i])):
-    if not (q[i] < max(p[i], r[i]) and q[i] > min(p[i], r[i])):
-      return False
-  return True
-
-
 # find orientation of ordered triple (p, q, r)
 def orientation(p, q, r):
   val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
@@ -337,22 +327,7 @@ def do_intersect(p1, q1, p2, q2):
   o3 = orientation(p2, q2, p1)
   o4 = orientation(p2, q2, q1)
 
-  if o1 != o2 and o3 != o4:
-    return True
-
-  if o1 == COLINEAR and on_segment(p1, p2, q1):
-    return True
-
-  if o2 == COLINEAR and on_segment(p1, q2, q1):
-    return True
-
-  if o3 == COLINEAR and on_segment(p2, p1, q2):
-    return True
-
-  if o4 == COLINEAR and on_segment(p2, q1, q2):
-    return True
-
-  return False
+  return o1 != o2 and o3 != o4
 
 
 # From https://github.com/KiCad/kicad-library-utils
