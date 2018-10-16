@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import time, math, heapq, random, re
+import sys, time, math, heapq, re
 from collections import deque
 import numpy as np
 import inkex as ix, simpletransform, simplestyle, cubicsuperpath, cspsubdiv
@@ -39,7 +39,6 @@ class KiCadExporter(ix.Effect):
     self.module = None
 
   def effect(self):
-    ix.debug('options {}'.format(self.options))
     self.module = [
       MODULE, MODULE_NAME,
       [LAYER, 'F.Cu'],
@@ -57,28 +56,28 @@ class KiCadExporter(ix.Effect):
     scale = 1 / KICAD_DPI
     scale /= self.unittouu('1px')
     h = self.unittouu(doc.xpath('@height', namespaces=ix.NSS)[0])
-    self.push_transform([[scale, 0.0, 0.0], [0.0, -scale, h * scale]])
-    self.process_group(doc)
-    self.pop_transform()
+    self.pushTransform([[scale, 0.0, 0.0], [0.0, -scale, h * scale]])
+    self.processGroup(doc)
+    self.popTransform()
 
-  def process_group(self, group):
+  def processGroup(self, group):
     if group.get(ix.addNS('groupmode', 'inkscape')):
       self.layer = group.get(ix.addNS('label', 'inkscape'))
     trans = group.get('transform')
     if trans:
-      self.push_transform(trans)
+      self.pushTransform(trans)
     for node in group:
       if node.tag == ix.addNS('g', 'svg'):
-        self.process_group(node)
+        self.processGroup(node)
       elif node.tag == ix.addNS('use', 'svg'):
-        self.process_clone(node)
+        self.processClone(node)
       else:
-        self.process_shape(node, self.current_transform())
+        self.processShape(node, self.currentTransform())
 
-      if trans:
-        self.pop_transform()
+    if trans:
+      self.popTransform()
 
-  def process_clone(self, clone):
+  def processClone(self, clone):
     trans = node.get('transform')
     x = node.get('x')
     y = node.get('y')
@@ -91,22 +90,22 @@ class KiCadExporter(ix.Effect):
       mat = simpletransform.composeTransform(mat, [[1.0, 0.0, 0.0], [0.0, 1.0, float(y)]])
 
     if trans or x or y:
-      self.push_transform(mat)
+      self.pushTransform(mat)
 
     refid = node.get(ix.addNS('href', 'xlink'))
     refnode = self.getElementById(refid[1:])
     if refnode is not None:
       if refnode.tag == ix.addNS('g', 'svg'):
-        self.process_group(refnode)
+        self.processGroup(refnode)
       elif refnode.tag == ix.addNS('use', 'svg'):
-        self.process_clone(refnode)
+        self.processClone(refnode)
       else:
-        self.process_shape(refnode, self.current_transform())
+        self.processShape(refnode, self.currentTransform())
 
     if trans or x or y:
-      self.pop_transform()
+      self.popTransform()
 
-  def process_shape(self, node, mat):
+  def processShape(self, node, mat):
     if node.tag == ix.addNS('path', 'svg'):
       d = node.get('d')
       if not d:
@@ -145,7 +144,6 @@ class KiCadExporter(ix.Effect):
     self.construct_polygons(p)
 
   def construct_polygons(self, p):
-    ix.debug('construct_polygons {}'.format(self.layer))
     cspsubdiv.cspsubdiv(p, self.options.flatness)
 
     rings = []
@@ -164,20 +162,16 @@ class KiCadExporter(ix.Effect):
         if inside != 0 and outside != 0:
           ix.errormsg('Rings of path intersect. outside: {} inside: {}'.format(outside, inside))
         if outside == 0:
-          ix.debug('r2 is inside r1')
           r2['inside'].append(r1)
 
     while len(rings) > 0:
       outer = []
       for r in rings:
         if len(r['inside']) == 0:
-          ix.debug('outer ring')
           p = Polygon(self.layer, r['points'])
           r['polygon'] = p
           self.polygons.append(p)
           outer.append(r)
-        else:
-          ix.debug('inner ring')
 
       inner = []
       for o in outer:
@@ -204,19 +198,17 @@ class KiCadExporter(ix.Effect):
       self.module.append(kicad_polygon(p))
     print format_sexp(build_sexp(self.module))
 
-  def push_transform(self, t):
-    ix.debug('push')
+  def pushTransform(self, t):
     if isinstance(t, basestring):
       t = simpletransform.parseTransform(t)
     if len(self.transformStack) > 0:
-      t = simpletransform.composeTransform(self.current_transform(), t)
+      t = simpletransform.composeTransform(self.currentTransform(), t)
     self.transformStack.append(t)
 
-  def current_transform(self):
+  def currentTransform(self):
     return self.transformStack[-1]
 
-  def pop_transform(self):
-    ix.debug('pop')
+  def popTransform(self):
     self.transformStack.pop()
     
 def append_ring(poly, ring):
@@ -255,29 +247,24 @@ def count_inside(r1, r2):
       outside += 1
   return (inside, outside)
 
-def pick_probe_vector(vertices):
-  edges = np.roll(vertices, 1, axis = 0) - vertices
-
-  while True:
-    direction = 2 * np.pi * random.random()
-    ray = np.array([np.cos(direction), np.sin(direction)])
-    if 0 not in np.cross(edges, ray):
-      return ray
-
-def count_intersections(point, ray, vertices):
-  edges = np.roll(vertices, 1, axis = 0) -  vertices
-
-  qs_minus_p = vertices - point
-  ray_cross_edges = np.cross(ray, edges)
-
-  ts = np.cross(qs_minus_p, edges) / ray_cross_edges
-  if 0 in ts:
-    return 1
-  us = np.cross(qs_minus_p, ray) / ray_cross_edges
-  return np.sum((ts >= 0) & (us >= 0) & (us < 1))
-
-def is_point_in_ring(point, ring):
-  return count_intersections(point, pick_probe_vector(ring), ring) % 2 == 1
+def is_point_in_ring(p, poly):
+  """
+  x, y -- x and y coordinates of point
+  poly -- a list of tuples [(x, y), (x, y), ...]
+  """
+  x = p[0]
+  y = p[1]
+  num = len(poly)
+  i = 0
+  j = num - 1
+  c = False
+  for i in range(num):
+    if ((poly[i][1] > y) != (poly[j][1] > y)) and \
+       (x < poly[i][0] + (poly[j][0] - poly[i][0]) * (y - poly[i][1]) /
+       (poly[j][1] - poly[i][1])):
+      c = not c
+    j = i
+  return c
 
 class Polygon(object):
   def __init__(self, layer, outerRing = []):
@@ -301,7 +288,6 @@ class Polygon(object):
     while len(candidates) > 0:
       (l, e, idx) = heapq.heappop(candidates)
       if not edge_intersects_ring(e, outer) and not edge_intersects_ring(e, inner):
-        ix.debug('found bridge {}'.format(idx))
         return idx
     return None
 
