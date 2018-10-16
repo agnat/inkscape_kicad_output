@@ -5,7 +5,6 @@ from collections import deque
 import numpy as np
 import inkex as ix, simpletransform, simplestyle, cubicsuperpath, cspsubdiv
 
-KICAD_DPI = 96
 MODULE_NAME = 'inkscape-kicad-output'
 
 COLINEAR = 0
@@ -53,10 +52,10 @@ class KiCadExporter(ix.Effect):
       self.module.append([TAGS, self.options.tags])
 
     doc = self.document.getroot()
-    scale = 1 / KICAD_DPI
-    scale /= self.unittouu('1px')
-    h = self.unittouu(doc.xpath('@height', namespaces=ix.NSS)[0])
-    self.pushTransform([[scale, 0.0, 0.0], [0.0, -scale, h * scale]])
+    scale = 1 / self.unittouu('1mm')
+    self.pushTransform([[scale, 0.0, 0.0], [0.0, scale, 0.0]])
+    # h = self.unittouu(doc.xpath('@height', namespaces=ix.NSS)[0])
+    # self.pushTransform([[scale, 0.0, 0.0], [0.0, scale, h * scale]])
     self.processGroup(doc)
     self.popTransform()
 
@@ -106,10 +105,9 @@ class KiCadExporter(ix.Effect):
       self.popTransform()
 
   def processShape(self, node, mat):
+    d = None
     if node.tag == ix.addNS('path', 'svg'):
       d = node.get('d')
-      if not d:
-        return
     elif node.tag == ix.addNS('rect', 'svg'):
       x = float(node.get('x', 0))
       y = float(node.get('y', 0))
@@ -133,15 +131,20 @@ class KiCadExporter(ix.Effect):
       rx = float(node.get('rx'))
       ry = float(node.get('ry'))
       d = "m %s,%s a %s,%s 0 0 1 %s,%s %s,%s 0 0 1 %s,%s z".format(cx + rx, cy, rx, ry, -2*rx, 0, rx, ry, 2*rx, 0)
-    else:
+
+    if not d:
       return
 
     p = cubicsuperpath.parsePath(d)
     trans = node.get('transform')
     if trans:
-      mat = simpletransform.composeTransform(mat, simpletransform.parseTransform(trans))
-      simpletransform.applyTransformToPath(mat, p)
+      self.pushTransform(trans)
+      # mat = simpletransform.composeTransform(mat, simpletransform.parseTransform(trans))
+    simpletransform.applyTransformToPath(self.currentTransform(), p)
     self.construct_polygons(p)
+    if trans:
+      self.popTransform()
+
 
   def construct_polygons(self, p):
     cspsubdiv.cspsubdiv(p, self.options.flatness)
@@ -199,14 +202,16 @@ class KiCadExporter(ix.Effect):
     print format_sexp(build_sexp(self.module))
 
   def pushTransform(self, t):
-    if isinstance(t, basestring):
+    ix.debug('push in: {}'.format(t))
+    if not isinstance(t, list):
       t = simpletransform.parseTransform(t)
+    ix.debug('push current: {} local: {}'.format(self.currentTransform(), t))
     if len(self.transformStack) > 0:
       t = simpletransform.composeTransform(self.currentTransform(), t)
     self.transformStack.append(t)
 
   def currentTransform(self):
-    return self.transformStack[-1]
+    return self.transformStack[-1] if len(self.transformStack) > 0 else [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
 
   def popTransform(self):
     self.transformStack.pop()
