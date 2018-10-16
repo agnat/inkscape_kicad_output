@@ -24,7 +24,9 @@ PTS = 'pts'
 XY = 'xy'
 WIDTH = 'width'
 
-class KiCadExporter(ix.Effect):
+#==============================================================================
+
+class KiCadOutput(ix.Effect):
   def __init__(self):
     ix.Effect.__init__(self)
     self.OptionParser.add_option('--format', action='store')
@@ -33,11 +35,18 @@ class KiCadExporter(ix.Effect):
     self.OptionParser.add_option('--flatness', action='store', type='float')
     self.OptionParser.add_option('--tab', action='store')
     self.transformStack = []
-    self.currentLayer = ''
+    self.layer = ''
+    self.builder = None
+
     self.polygons = []
     self.module = None
 
   def effect(self):
+    if self.options.format == 'footprint':
+      self.builder = KiCadFootprintBuilder(self.options)
+    else:
+      abort('Unhandled format "{}"'.format(self.options.format))
+
     self.module = [
       MODULE, MODULE_NAME,
       [LAYER, 'F.Cu'],
@@ -59,12 +68,17 @@ class KiCadExporter(ix.Effect):
     self.processGroup(doc)
     self.popTransform()
 
+  def output(self):
+    print self.builder.output()
+
   def processGroup(self, group):
     if group.get(ix.addNS('groupmode', 'inkscape')):
       self.layer = group.get(ix.addNS('label', 'inkscape'))
+
     trans = group.get('transform')
     if trans:
       self.pushTransform(trans)
+    
     for node in group:
       if node.tag == ix.addNS('g', 'svg'):
         self.processGroup(node)
@@ -139,18 +153,39 @@ class KiCadExporter(ix.Effect):
     trans = node.get('transform')
     if trans:
       self.pushTransform(trans)
-      # mat = simpletransform.composeTransform(mat, simpletransform.parseTransform(trans))
     simpletransform.applyTransformToPath(self.currentTransform(), p)
-    self.construct_polygons(p)
+    self.builder.pathToPolygons(p, self.layer)
     if trans:
       self.popTransform()
 
+  def pushTransform(self, t):
+    if not isinstance(t, list):
+      t = simpletransform.parseTransform(t)
+    if len(self.transformStack) > 0:
+      t = simpletransform.composeTransform(self.currentTransform(), t)
+    self.transformStack.append(t)
 
-  def construct_polygons(self, p):
-    cspsubdiv.cspsubdiv(p, self.options.flatness)
+  def currentTransform(self):
+    return self.transformStack[-1] if len(self.transformStack) > 0 else [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+
+  def popTransform(self):
+    self.transformStack.pop()
+    
+#==============================================================================
+
+class KiCadBuilder(object):
+  def __init__(self, options):
+    self.options = options
+    self.expression = []
+
+  def output(self):
+    return format_sexp(build_sexp(self.expression))
+
+  def pathToPolygons(self, path, layer):
+    cspsubdiv.cspsubdiv(path, self.options.flatness)
 
     rings = []
-    for sp in p:
+    for sp in path:
       ring = []
       for csp in sp:
         ring.append([csp[1][0], csp[1][1]])
@@ -163,17 +198,19 @@ class KiCadExporter(ix.Effect):
           continue
         (inside, outside) = count_inside(r1['points'], r2['points'])
         if inside != 0 and outside != 0:
-          ix.errormsg('Rings of path intersect. outside: {} inside: {}'.format(outside, inside))
+          # TODO: Provide context
+          abort('Rings of path intersect. outside: {} inside: {}'.format(outside, inside))
         if outside == 0:
           r2['inside'].append(r1)
 
+    polygons = []
     while len(rings) > 0:
       outer = []
       for r in rings:
         if len(r['inside']) == 0:
-          p = Polygon(self.layer, r['points'])
-          r['polygon'] = p
-          self.polygons.append(p)
+          polygon = Polygon(layer, r['points'])
+          r['polygon'] = polygon
+          polygons.append(polygon)
           outer.append(r)
 
       inner = []
@@ -196,26 +233,31 @@ class KiCadExporter(ix.Effect):
             r['inside'].remove(i)
         rings.remove(i)
 
-  def output(self):
-    for p in self.polygons:
-      self.module.append(kicad_polygon(p))
-    print format_sexp(build_sexp(self.module))
+    for polygon in polygons:
+      points = [PTS]
+      for p in polygon.bridge_inner_rings():
+        points.append([XY, p[0], p[1]])
+      self.expression.append([FP_POLY, points, [LAYER, layer], [WIDTH, 0.0]])
 
-  def pushTransform(self, t):
-    ix.debug('push in: {}'.format(t))
-    if not isinstance(t, list):
-      t = simpletransform.parseTransform(t)
-    ix.debug('push current: {} local: {}'.format(self.currentTransform(), t))
-    if len(self.transformStack) > 0:
-      t = simpletransform.composeTransform(self.currentTransform(), t)
-    self.transformStack.append(t)
 
-  def currentTransform(self):
-    return self.transformStack[-1] if len(self.transformStack) > 0 else [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
 
-  def popTransform(self):
-    self.transformStack.pop()
-    
+class KiCadFootprintBuilder(KiCadBuilder):
+  def __init__(self, options):
+    super(KiCadFootprintBuilder, self).__init__(options)
+    self.expression = [
+      MODULE, MODULE_NAME,
+      [LAYER, 'F.Cu'],
+      [TEDIT, timestamp()],
+      [ATTR, 'smd']
+    ]
+    if options.description:
+      self.expression.append([DESCR, options.description])
+
+    if options.tags > 0:
+      self.expression.append([TAGS, options.tags])
+
+#==============================================================================
+
 def append_ring(poly, ring):
   for p in ring:
     poly.append([XY, "{0:.2f}".format(p[0]), "{0:.2f}".format(p[1])])
@@ -323,7 +365,7 @@ def orientation(p, q, r):
   val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
   if val < EPSILON:
     return COLINEAR
-  return CLOCKWISE if val > 0 else COUNTERCLOCKWISE # clock or counterclockwise
+  return CLOCKWISE if val > 0 else COUNTERCLOCKWISE
 
 # return wether line segment p1q1 intersects p2q2
 def do_intersect(p1, q1, p2, q2):
@@ -334,6 +376,9 @@ def do_intersect(p1, q1, p2, q2):
 
   return o1 != o2 and o3 != o4
 
+def abort(message):
+  ix.errormsg(message)
+  sys.exit(1)
 
 # From https://github.com/KiCad/kicad-library-utils
 # kicad-library-utils/common/sexpr.py
@@ -406,5 +451,5 @@ def format_sexp(sexp, indentation_size=2, max_nesting=2):
 
 if __name__ == '__main__':
   ix.localize()
-  KiCadExporter().affect()
+  KiCadOutput().affect()
 
