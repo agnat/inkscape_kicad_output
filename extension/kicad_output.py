@@ -30,10 +30,11 @@ class KiCadOutput(ix.Effect):
   def __init__(self):
     ix.Effect.__init__(self)
     self.OptionParser.add_option('--format', action='store')
+    self.OptionParser.add_option('--layer-mode', action='store')
+    self.OptionParser.add_option('--target-layer', action='store')
     self.OptionParser.add_option('--description', action='store')
     self.OptionParser.add_option('--tags', action='store', default='svg inkscape')
     self.OptionParser.add_option('--flatness', action='store', type='float')
-    self.OptionParser.add_option('--tab', action='store')
     self.transformStack = []
     self.layer = ''
     self.builder = None
@@ -42,6 +43,7 @@ class KiCadOutput(ix.Effect):
     self.module = None
 
   def effect(self):
+    # ix.debug('options: {}'.format(self.options))
     if self.options.format == 'footprint':
       self.builder = KiCadFootprintBuilder(self.options)
     else:
@@ -54,10 +56,13 @@ class KiCadOutput(ix.Effect):
       [ATTR, 'smd']
     ]
 
+    if self.options.layer_mode == 'target':
+      self.layer = self.options.target_layer
+
     if self.options.description:
       self.module.append([DESCR, self.options.description])
 
-    if self.options.tags > 0:
+    if self.options.tags:
       self.module.append([TAGS, self.options.tags])
 
     doc = self.document.getroot()
@@ -72,7 +77,7 @@ class KiCadOutput(ix.Effect):
     print self.builder.output()
 
   def processGroup(self, group):
-    if group.get(ix.addNS('groupmode', 'inkscape')):
+    if self.options.layer_mode == 'document' and group.get(ix.addNS('groupmode', 'inkscape')):
       self.layer = group.get(ix.addNS('label', 'inkscape'))
 
     trans = group.get('transform')
@@ -154,7 +159,7 @@ class KiCadOutput(ix.Effect):
     if trans:
       self.pushTransform(trans)
     simpletransform.applyTransformToPath(self.currentTransform(), p)
-    self.builder.pathToPolygons(p, self.layer)
+    self.builder.appendPolygonsFromPath(p, self.layer)
     if trans:
       self.popTransform()
 
@@ -173,6 +178,7 @@ class KiCadOutput(ix.Effect):
     
 #==============================================================================
 
+
 class KiCadBuilder(object):
   def __init__(self, options):
     self.options = options
@@ -181,64 +187,13 @@ class KiCadBuilder(object):
   def output(self):
     return format_sexp(build_sexp(self.expression))
 
-  def pathToPolygons(self, path, layer):
+  def appendPolygonsFromPath(self, path, layer):
     cspsubdiv.cspsubdiv(path, self.options.flatness)
 
-    rings = []
-    for sp in path:
-      ring = []
-      for csp in sp:
-        ring.append([csp[1][0], csp[1][1]])
-      ring.pop() # remove duplicate vertex
-      rings.append({'inside': [], 'points': ring})
-
-    for r1 in rings:
-      for r2 in rings:
-        if r1 == r2:
-          continue
-        (inside, outside) = count_inside(r1['points'], r2['points'])
-        if inside != 0 and outside != 0:
-          # TODO: Provide context
-          abort('Rings of path intersect. outside: {} inside: {}'.format(outside, inside))
-        if outside == 0:
-          r2['inside'].append(r1)
-
-    polygons = []
-    while len(rings) > 0:
-      outer = []
-      for r in rings:
-        if len(r['inside']) == 0:
-          polygon = Polygon(layer, r['points'])
-          r['polygon'] = polygon
-          polygons.append(polygon)
-          outer.append(r)
-
-      inner = []
-      for o in outer:
-        for r in rings:
-          if o == r:
-            continue
-          if o in r['inside']:
-            if len(r['inside']) == 1:
-              points = r['points'] if ring_orientation(r['points']) == CLOCKWISE else r['points'][::-1]
-              o['polygon'].innerRings.append(points)
-              inner.append(r)
-            else:
-              r['inside'].remove(o)
-        rings.remove(o)
-      
-      for i in inner:
-        for r in rings:
-          if i in r['inside']:
-            r['inside'].remove(i)
-        rings.remove(i)
+    polygons = constructBridgedPolygonsFromPath(path)
 
     for polygon in polygons:
-      points = [PTS]
-      for p in polygon.bridge_inner_rings():
-        points.append([XY, p[0], p[1]])
-      self.expression.append([FP_POLY, points, [LAYER, layer], [WIDTH, 0.0]])
-
+      self.appendPolygon(polygon, layer)
 
 
 class KiCadFootprintBuilder(KiCadBuilder):
@@ -256,16 +211,82 @@ class KiCadFootprintBuilder(KiCadBuilder):
     if options.tags > 0:
       self.expression.append([TAGS, options.tags])
 
+  def appendPolygon(self, polygon, layer, width = 0.0):
+    points = [PTS]
+    points.extend([[XY, p[0], p[1]] for p in polygon])
+    self.expression.append([FP_POLY, points, [LAYER, layer], [WIDTH, width]])
+
+
 #==============================================================================
 
-def append_ring(poly, ring):
-  for p in ring:
-    poly.append([XY, "{0:.2f}".format(p[0]), "{0:.2f}".format(p[1])])
+def extractRings(path):
+  rings = []
+  for sp in path:
+    ring = []
+    for csp in sp:
+      ring.append([csp[1][0], csp[1][1]])
+    ring.pop() # remove duplicate vertex
+    rings.append(Ring(ring))
+  return rings
 
-def kicad_polygon(p):
-  points = [PTS]
-  append_ring(points, p.bridge_inner_rings())
-  return [FP_POLY, points, [LAYER, p.layer], [WIDTH, 0.0]]
+def probeRingContainment(rings):
+  for r1 in rings:
+    for r2 in rings:
+      if r1 == r2:
+        continue
+      (inside, outside) = count_inside(r1.points, r2.points)
+      if inside != 0 and outside != 0:
+        # TODO: Provide context
+        abort('Rings of path intersect. outside: {} inside: {}'.format(outside, inside))
+      if outside == 0:
+        r2.containedIn.append(r1)
+
+
+def peelPolygons(rings):
+  polygons = []
+  while len(rings) > 0:
+    startLength = len(rings)
+    outer = []
+    for r in rings:
+      if len(r.containedIn) == 0:
+        r.points = r.points if ring_orientation(r.points) == COUNTERCLOCKWISE else r.points[::-1]
+        polygon = Polygon(r.points)
+        r.polygon = polygon
+        polygons.append(polygon)
+        outer.append(r)
+
+    inner = []
+    for o in outer:
+      for r in rings:
+        if o == r:
+          continue
+        if o in r.containedIn:
+          if len(r.containedIn) == 1:
+            points = r.points if ring_orientation(r.points) == CLOCKWISE else r.points[::-1]
+            o.polygon.innerRings.append(points)
+            inner.append(r)
+          else:
+            r.containedIn.remove(o)
+      rings.remove(o)
+    
+    for i in inner:
+      for r in rings:
+        if i in r.containedIn:
+          r.containedIn.remove(i)
+      rings.remove(i)
+
+    if startLength == len(rings):
+      abort('Didn\'t make any progress. Kaputt.')
+  return polygons
+
+
+def constructBridgedPolygonsFromPath(path):
+  rings = extractRings(path)
+  probeRingContainment(rings)
+  polygons = peelPolygons(rings)
+  return [p.bridge_inner_rings() for p in polygons]
+
+#==============================================================================
 
 def timestamp():
   return "{0:8X}".format(int(time.time()))
@@ -294,9 +315,10 @@ def count_inside(r1, r2):
       outside += 1
   return (inside, outside)
 
+# https://en.wikipedia.org/wiki/Even-odd_rule
 def is_point_in_ring(p, poly):
   """
-  x, y -- x and y coordinates of point
+  p -- a point
   poly -- a list of tuples [(x, y), (x, y), ...]
   """
   x = p[0]
@@ -314,10 +336,9 @@ def is_point_in_ring(p, poly):
   return c
 
 class Polygon(object):
-  def __init__(self, layer, outerRing = []):
+  def __init__(self, outerRing = []):
     self.outerRing = outerRing
     self.innerRings = []
-    self.layer = layer
 
   # bridge outer ring and holes: https://arxiv.org/pdf/1212.6038.pdf
   def bridge_inner_rings(self):
@@ -345,6 +366,12 @@ class Polygon(object):
     h.append(h[0])
     h.append(result[oi])
     result[oi+1:oi+1] = h
+
+class Ring(object):
+  def __init__(self, points):
+    self.points = points
+    self.polygon = None
+    self.containedIn = []
 
 def edge_intersects_ring(e, r):
   n = len(r)

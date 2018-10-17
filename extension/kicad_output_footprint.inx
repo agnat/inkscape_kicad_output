@@ -8,14 +8,19 @@
   <dependency type="executable" location="extensions">simpletransform.py</dependency>
   <dependency type="executable" location="extensions">cubicsuperpath.py</dependency>
   <dependency type="executable" location="extensions">cspsubdiv.py</dependency>
-  <param name="tab" type="notebook">
-    <page name="options" _gui-text="Options">
-      <param name="flatness" type="float" precision="2" min="0.01" max="100" gui-text="Subdivision Flatness">1</param>
-      <param name="description" type="string" gui-text="Description"/>
-      <param name="tags" type="string" gui-text="Tags">svg inkscape</param>
-      <param name="format" type="string" gui-hidden="true">footprint</pararm>
-    </page>
+  
+  <param name="format" type="string" gui-hidden="true">footprint</pararm>
+  <param name="layer-mode" type="enum" gui-text="Layer Handling">
+    <item value="target">Target Layer</item>
+    <item value="document">Use Inkscape layers</item>
   </param>
+  <param name="target-layer" type="string" gui-text="Target Layer">F.SilkS</param>
+  <param name="description" type="string" gui-text="Description"/>
+  <param name="tags" type="string" gui-text="Tags">decal</param>
+  <param name="flatness" type="float" precision="2" min="0.01" max="10"
+         gui-text="Subdivision Flatness"
+         gui-description="Smaller values give finer subdivisions">0.1</param>
+
   <output>
     <extension>.kicad_mod</extension>
     <mimetype>application/x-kicad-footprint</mimetype>
