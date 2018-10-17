@@ -34,6 +34,7 @@ class KiCadOutput(ix.Effect):
     self.OptionParser.add_option('--target-layer', action='store')
     self.OptionParser.add_option('--description', action='store')
     self.OptionParser.add_option('--tags', action='store', default='svg inkscape')
+    self.OptionParser.add_option('--origin', action='store')
     self.OptionParser.add_option('--flatness', action='store', type='float')
     self.transformStack = []
     self.layer = ''
@@ -67,8 +68,14 @@ class KiCadOutput(ix.Effect):
 
     doc = self.document.getroot()
     scale = 1 / self.unittouu('1mm')
-    self.pushTransform([[scale, 0.0, 0.0], [0.0, scale, 0.0]])
-    # h = self.unittouu(doc.xpath('@height', namespaces=ix.NSS)[0])
+    w = self.unittouu(doc.xpath('@width', namespaces=ix.NSS)[0])
+    h = self.unittouu(doc.xpath('@height', namespaces=ix.NSS)[0])
+    dx = 0
+    dy = 0
+    if self.options.origin == 'center':
+      dx = -0.5 * scale * w
+      dy = -0.5 * scale * h
+    self.pushTransform([[scale, 0.0, dx], [0.0, scale, dy]])
     # self.pushTransform([[scale, 0.0, 0.0], [0.0, scale, h * scale]])
     self.processGroup(doc)
     self.popTransform()
