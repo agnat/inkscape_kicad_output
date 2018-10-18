@@ -3,7 +3,7 @@
 import sys, time, math, heapq, re
 from collections import deque
 import numpy as np
-import inkex as ix, simpletransform, simplestyle, cubicsuperpath, cspsubdiv
+import inkex as ix, simpletransform, simplestyle, simplepath, cubicsuperpath, cspsubdiv
 
 MODULE_NAME = 'inkscape-kicad-output'
 
@@ -20,6 +20,9 @@ ATTR = 'attr'
 DESCR = 'descr'
 TAGS = 'tags'
 FP_POLY = 'fp_poly'
+FP_LINE = 'fp_line'
+START = 'start'
+END = 'end'
 PTS = 'pts'
 XY = 'xy'
 WIDTH = 'width'
@@ -36,12 +39,9 @@ class KiCadOutput(ix.Effect):
     self.OptionParser.add_option('--tags', action='store', default='svg inkscape')
     self.OptionParser.add_option('--origin', action='store')
     self.OptionParser.add_option('--flatness', action='store', type='float')
-    self.transformStack = []
+    self.OptionParser.add_option('--default-stroke', action='store', type='float', default=1)
     self.layer = ''
     self.builder = None
-
-    self.polygons = []
-    self.module = None
 
   def effect(self):
     # ix.debug('options: {}'.format(self.options))
@@ -50,21 +50,8 @@ class KiCadOutput(ix.Effect):
     else:
       abort('Unhandled format "{}"'.format(self.options.format))
 
-    self.module = [
-      MODULE, MODULE_NAME,
-      [LAYER, 'F.Cu'],
-      [TEDIT, timestamp()],
-      [ATTR, 'smd']
-    ]
-
     if self.options.layer_mode == 'target':
       self.layer = self.options.target_layer
-
-    if self.options.description:
-      self.module.append([DESCR, self.options.description])
-
-    if self.options.tags:
-      self.module.append([TAGS, self.options.tags])
 
     doc = self.document.getroot()
     scale = 1 / self.unittouu('1mm')
@@ -75,10 +62,9 @@ class KiCadOutput(ix.Effect):
     if self.options.origin == 'center':
       dx = -0.5 * scale * w
       dy = -0.5 * scale * h
-    self.pushTransform([[scale, 0.0, dx], [0.0, scale, dy]])
-    # self.pushTransform([[scale, 0.0, 0.0], [0.0, scale, h * scale]])
+    self.builder.pushTransform([[scale, 0.0, dx], [0.0, scale, dy]])
     self.processGroup(doc)
-    self.popTransform()
+    self.builder.popTransform()
 
   def output(self):
     print self.builder.output()
@@ -89,7 +75,7 @@ class KiCadOutput(ix.Effect):
 
     trans = group.get('transform')
     if trans:
-      self.pushTransform(trans)
+      self.builder.pushTransform(trans)
     
     for node in group:
       if node.tag == ix.addNS('g', 'svg'):
@@ -97,10 +83,10 @@ class KiCadOutput(ix.Effect):
       elif node.tag == ix.addNS('use', 'svg'):
         self.processClone(node)
       else:
-        self.processShape(node, self.currentTransform())
+        self.processShape(node)
 
     if trans:
-      self.popTransform()
+      self.builder.popTransform()
 
   def processClone(self, clone):
     trans = node.get('transform')
@@ -115,7 +101,7 @@ class KiCadOutput(ix.Effect):
       mat = simpletransform.composeTransform(mat, [[1.0, 0.0, 0.0], [0.0, 1.0, float(y)]])
 
     if trans or x or y:
-      self.pushTransform(mat)
+      self.builder.pushTransform(mat)
 
     refid = node.get(ix.addNS('href', 'xlink'))
     refnode = self.getElementById(refid[1:])
@@ -125,12 +111,12 @@ class KiCadOutput(ix.Effect):
       elif refnode.tag == ix.addNS('use', 'svg'):
         self.processClone(refnode)
       else:
-        self.processShape(refnode, self.currentTransform())
+        self.processShape(refnode)
 
     if trans or x or y:
-      self.popTransform()
+      self.builder.popTransform()
 
-  def processShape(self, node, mat):
+  def processShape(self, node):
     d = None
     if node.tag == ix.addNS('path', 'svg'):
       d = node.get('d')
@@ -161,14 +147,72 @@ class KiCadOutput(ix.Effect):
     if not d:
       return
 
-    p = cubicsuperpath.parsePath(d)
     trans = node.get('transform')
     if trans:
-      self.pushTransform(trans)
-    simpletransform.applyTransformToPath(self.currentTransform(), p)
-    self.builder.appendPolygonsFromPath(p, self.layer)
+      self.builder.pushTransform(trans)
+
+    style = simplestyle.parseStyle(node.get('style'))
+    self.builder.appendPolygonsFromPath(d, self.layer, style)
+    self.builder.appendOutlineFromPath(d, self.layer, style)
+    
     if trans:
-      self.popTransform()
+      self.builder.popTransform()
+    
+#==============================================================================
+
+
+class KiCadBuilder(object):
+  def __init__(self, options):
+    self.options = options
+    self.expression = []
+    self.transformStack = []
+
+  def output(self):
+    return format_sexp(build_sexp(self.expression))
+
+  def appendPolygonsFromPath(self, d, layer, style):
+    fill = True
+    if style.has_key('fill'):
+      fill = style['fill']
+    if not fill or fill == 'none':
+      return
+    ix.debug('appendPolygonsFromPath')
+    path = cubicsuperpath.parsePath(d)
+    simpletransform.applyTransformToPath(self.currentTransform(), path)
+    cspsubdiv.cspsubdiv(path, self.options.flatness)
+    polygons = constructBridgedPolygonsFromPath(path)
+    for polygon in polygons:
+      self.appendPolygon(polygon, layer)
+
+  def appendOutlineFromPath(self, d, layer, style):
+    stroke = None
+    if style.has_key('stroke'):
+      stroke = style['stroke']
+    if not stroke or stroke == 'none':
+      return
+    stroke = float(style['stroke-width'] if style.has_key('stroke-wiidth') else self.options.default_stroke)
+    ix.debug('appendOutlineFromPath stroke: {}'.format(stroke))
+    path = simplepath.parsePath(d)
+    csp = cubicsuperpath.parsePath(d)
+    ix.debug('sp: {} csp: {}'.format(len(path), len(csp[0])))
+    i = 0
+    pen = [0, 0]
+    subStart = pen
+    for subpath in csp:
+      for segment in subpath:
+        command = path[i][0]
+        ix.debug('cmd: {}'.format(command))
+        lastPen = pen
+        if command == 'M':
+          pen = subStart = segment[0]
+        elif command == 'L':
+          pen = segment[0]
+          self.appendLine(lastPen, pen, layer, stroke)
+        elif command ==  'Z':
+          pen  = segment[0]
+          self.appendLine(lastPen, pen, layer, stroke) # XXX read up on close semantics
+        i += 1
+
 
   def pushTransform(self, t):
     if not isinstance(t, list):
@@ -182,25 +226,6 @@ class KiCadOutput(ix.Effect):
 
   def popTransform(self):
     self.transformStack.pop()
-    
-#==============================================================================
-
-
-class KiCadBuilder(object):
-  def __init__(self, options):
-    self.options = options
-    self.expression = []
-
-  def output(self):
-    return format_sexp(build_sexp(self.expression))
-
-  def appendPolygonsFromPath(self, path, layer):
-    cspsubdiv.cspsubdiv(path, self.options.flatness)
-
-    polygons = constructBridgedPolygonsFromPath(path)
-
-    for polygon in polygons:
-      self.appendPolygon(polygon, layer)
 
 
 class KiCadFootprintBuilder(KiCadBuilder):
@@ -222,6 +247,10 @@ class KiCadFootprintBuilder(KiCadBuilder):
     points = [PTS]
     points.extend([[XY, p[0], p[1]] for p in polygon])
     self.expression.append([FP_POLY, points, [LAYER, layer], [WIDTH, width]])
+
+  def appendLine(self, start, end, layer, stroke):
+    ix.debug('line {} {}'.format(start, end))
+    self.expression.append([FP_LINE, [START, start[0], start[1]], [END, end[0], end[1]], [LAYER, layer], [WIDTH, stroke]])
 
 
 #==============================================================================
@@ -294,9 +323,6 @@ def constructBridgedPolygonsFromPath(path):
   return [p.bridge_inner_rings() for p in polygons]
 
 #==============================================================================
-
-def timestamp():
-  return "{0:8X}".format(int(time.time()))
 
 # compute the signed area of a given simple polygon
 # http://mathworld.wolfram.com/PolygonArea.html
@@ -409,6 +435,9 @@ def do_intersect(p1, q1, p2, q2):
   o4 = orientation(p2, q2, q1)
 
   return o1 != o2 and o3 != o4
+
+def timestamp():
+  return "{0:8X}".format(int(time.time()))
 
 def abort(message):
   ix.errormsg(message)
