@@ -10,7 +10,7 @@ MODULE_NAME = 'inkscape-kicad-output'
 COLINEAR = 0
 CLOCKWISE = 1
 COUNTERCLOCKWISE = 2
-EPSILON = 1e-6
+EPSILON = 1e-9
 
 # KiCad Mod S-Expression Constants
 MODULE = 'module'
@@ -21,6 +21,7 @@ DESCR = 'descr'
 TAGS = 'tags'
 FP_POLY = 'fp_poly'
 FP_LINE = 'fp_line'
+FP_CURVE = 'fp_curve'
 START = 'start'
 END = 'end'
 PTS = 'pts'
@@ -54,7 +55,7 @@ class KiCadOutput(ix.Effect):
       self.layer = self.options.target_layer
 
     doc = self.document.getroot()
-    scale = 1 / self.unittouu('1mm')
+    scale = 1 / self.unittouu('10mm')
     w = self.unittouu(doc.xpath('@width', namespaces=ix.NSS)[0])
     h = self.unittouu(doc.xpath('@height', namespaces=ix.NSS)[0])
     dx = 0
@@ -160,6 +161,8 @@ class KiCadOutput(ix.Effect):
     
 #==============================================================================
 
+def listit(t):
+  return list(map(listit, t)) if isinstance(t, (list, tuple)) else t
 
 class KiCadBuilder(object):
   def __init__(self, options):
@@ -176,10 +179,11 @@ class KiCadBuilder(object):
       fill = style['fill']
     if not fill or fill == 'none':
       return
-    ix.debug('appendPolygonsFromPath')
+    # ix.debug('appendPolygonsFromPath')
     path = cubicsuperpath.parsePath(d)
-    simpletransform.applyTransformToPath(self.currentTransform(), path)
     cspsubdiv.cspsubdiv(path, self.options.flatness)
+    path = listit(path)
+    simpletransform.applyTransformToPath(self.currentTransform(), path)
     polygons = constructBridgedPolygonsFromPath(path)
     for polygon in polygons:
       self.appendPolygon(polygon, layer)
@@ -190,28 +194,76 @@ class KiCadBuilder(object):
       stroke = style['stroke']
     if not stroke or stroke == 'none':
       return
-    stroke = float(style['stroke-width'] if style.has_key('stroke-wiidth') else self.options.default_stroke)
-    ix.debug('appendOutlineFromPath stroke: {}'.format(stroke))
+    stroke = float(style['stroke-width']) if style.has_key('stroke-width') else self.options.default_stroke
+    # ix.debug('appendOutlineFromPath stroke: {}'.format(stroke))
     path = simplepath.parsePath(d)
     csp = cubicsuperpath.parsePath(d)
-    ix.debug('sp: {} csp: {}'.format(len(path), len(csp[0])))
-    i = 0
-    pen = [0, 0]
-    subStart = pen
-    for subpath in csp:
-      for segment in subpath:
-        command = path[i][0]
-        ix.debug('cmd: {}'.format(command))
-        lastPen = pen
-        if command == 'M':
-          pen = subStart = segment[0]
-        elif command == 'L':
-          pen = segment[0]
-          self.appendLine(lastPen, pen, layer, stroke)
-        elif command ==  'Z':
-          pen  = segment[0]
-          self.appendLine(lastPen, pen, layer, stroke) # XXX read up on close semantics
-        i += 1
+    # ix.debug('sp: {} csp: {}'.format(len(path), len(csp[0])))
+
+    mat = self.currentTransform()
+    # t = lambda point: simpletransform.applyTransformToPoint(mat, point)
+    def t(point):
+      p = point[:]
+      simpletransform.applyTransformToPoint(mat, p)
+      return p
+    start = []
+    last = []
+    lastctrl = []
+    for s in path:
+      cmd, params = s        
+      if cmd == 'M':
+        if last:
+          #  TODO
+          # csp[subpath].append([lastctrl[:],last[:],last[:]])
+          pass
+        start = t(params)
+        # ix.debug('p {}'.format(start))
+        last = start
+        lastctrl = start
+      elif cmd == 'L':
+        end = t(params)
+        # csp[subpath].append([lastctrl[:],last[:],last[:]])
+        self.appendLine(last, end, layer, stroke)
+        last = end
+        lastctrl = end
+      elif cmd == 'C':
+        p0 = t(params[:2])
+        p1 = t(params[2:4])
+        p2 = t(params[-2:])
+        self.appendCurve(last, [p0, p1, p2], layer, stroke)
+        # csp[subpath].append([lastctrl[:],last[:],params[:2]])
+        last = p2
+        lastctrl = p1
+      elif cmd == 'Q':
+        q0=last
+        q1=t(params[0:2])
+        q2=t(params[2:4])
+        x0=     q0[0]
+        x1=1./3*q0[0]+2./3*q1[0]
+        x2=           2./3*q1[0]+1./3*q2[0]
+        x3=                           q2[0]
+        y0=     q0[1]
+        y1=1./3*q0[1]+2./3*q1[1]
+        y2=           2./3*q1[1]+1./3*q2[1]
+        y3=                           q2[1]
+        self.appendCurve([x0, y0], [[x1, y1], [x2, y2], [x3, y3]], layer, stroke)
+        # csp[subpath].append([lastctrl[:],[x0,y0],[x1,y1]])
+        last = [x3,y3]
+        lastctrl = [x2,y2]
+      elif cmd == 'A':
+        ix.debug('TODO: Arc')
+        # arcp=ArcToPath(last[:],params[:])
+        # arcp[ 0][0]=lastctrl[:]
+        # last=arcp[-1][1]
+        # lastctrl = arcp[-1][0]
+        # csp[subpath]+=arcp[:-1]
+      elif cmd == 'Z':
+        self.appendLine(last, start, layer, stroke)
+        # csp[subpath].append([lastctrl[:],last[:],last[:]])
+        last = start
+        lastctrl = start
+    #append final superpoint
+    # csp[subpath].append([lastctrl[:],last[:],last[:]])
 
 
   def pushTransform(self, t):
@@ -249,8 +301,31 @@ class KiCadFootprintBuilder(KiCadBuilder):
     self.expression.append([FP_POLY, points, [LAYER, layer], [WIDTH, width]])
 
   def appendLine(self, start, end, layer, stroke):
-    ix.debug('line {} {}'.format(start, end))
-    self.expression.append([FP_LINE, [START, start[0], start[1]], [END, end[0], end[1]], [LAYER, layer], [WIDTH, stroke]])
+    # ix.debug('line {} {}'.format(start, end))
+    self.expression.append([FP_LINE,
+      [START, start[0], start[1]],
+      [END, end[0], end[1]],
+      [LAYER, layer],
+      [WIDTH, stroke]
+    ])
+
+  def appendCurve(self, start, bezier, layer, stroke):
+    # ix.debug('curve {} {}'.format(start, bezier))
+    self.expression.append([
+      FP_CURVE,
+      [PTS,
+        [XY, start[0], start[1]],
+        [XY, bezier[0][0], bezier[0][1]],
+        [XY, bezier[1][0], bezier[1][1]],
+        [XY, bezier[2][0], bezier[2][1]],
+      ],
+      [LAYER, layer],
+      [WIDTH, stroke]
+    ])
+    # layer = 'Dwgs.User'
+    # self.appendLine(start, bezier[0], layer, 0.5)
+    # self.appendLine(bezier[0], bezier[1], layer, 0.5)
+    # self.appendLine(bezier[1], bezier[2], layer, 0.5)
 
 
 #==============================================================================
@@ -446,7 +521,7 @@ def abort(message):
 # From https://github.com/KiCad/kicad-library-utils
 # kicad-library-utils/common/sexpr.py
 
-float_render = "%.2f"
+float_render = "%.3f"
 
 term_regex = r'''(?mx)
     \s*(?:
