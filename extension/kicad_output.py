@@ -161,9 +161,6 @@ class KiCadOutput(ix.Effect):
     
 #==============================================================================
 
-def listit(t):
-  return list(map(listit, t)) if isinstance(t, (list, tuple)) else t
-
 class KiCadBuilder(object):
   def __init__(self, options):
     self.options = options
@@ -453,6 +450,8 @@ class Polygon(object):
     result = self.outerRing[:]
     for hole in self.innerRings:
       bridge = self.select_bridge(result, hole)
+      if not bridge:
+        abort('Failed to find valid bridge')
       self.insert_bridged_hole(result, hole, bridge)
     return result
 
@@ -470,7 +469,7 @@ class Polygon(object):
   def insert_bridged_hole(self, result, hole, bridge):
     [oi, ii] = bridge
     h = deque(hole)
-    h.rotate(ii)
+    h.rotate(-ii)
     h.append(h[0])
     h.append(result[oi])
     result[oi+1:oi+1] = h
@@ -517,6 +516,9 @@ def timestamp():
 def abort(message):
   ix.errormsg(message)
   sys.exit(1)
+
+def listit(t):
+  return list(map(listit, t)) if isinstance(t, (list, tuple)) else t
 
 # From https://github.com/KiCad/kicad-library-utils
 # kicad-library-utils/common/sexpr.py
