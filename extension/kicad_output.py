@@ -25,12 +25,20 @@ class KiCadOutput(ix.Effect):
     self.OptionParser.add_option('--origin', action='store')
     self.OptionParser.add_option('--flatness', action='store', type='float')
     self.OptionParser.add_option('--default-stroke', action='store', type='float', default=1)
-    self.OptionParser.add_option('--reference')
+    
+    self.OptionParser.add_option('--ref-mode')
+
+    self.OptionParser.add_option('--value-mode')
+    self.OptionParser.add_option('--value-src')
+    self.OptionParser.add_option('--custom-value')
+    
+    self.OptionParser.add_option('--tab')
     self.layer = ''
     self.builder = None
 
   def effect(self):
     # ix.debug('options: {}'.format(self.options))
+    start = time.time()
     doc = self.document.getroot()
     scale = 1 / self.unittouu('1mm')
     w = self.unittouu(self.getDocumentWidth())
@@ -45,6 +53,8 @@ class KiCadOutput(ix.Effect):
 
     self.processGroup(doc)
     self.builder.popTransform()
+    end = time.time()
+    ix.debug('time: {0:.2f}'.format(end - start))
 
   def output(self):
     print self.builder.output()
@@ -148,7 +158,8 @@ class KiCadBuilder(object):
     self.document = document
     self.options = options
     self.expression = []
-
+    self.size = size
+    self.scale = scale
 
     dx = 0
     dy = 0
@@ -311,8 +322,31 @@ class KiCadFootprintBuilder(KiCadBuilder):
     if options.tags > 0:
       self.expression.append([TAGS, options.tags])
 
-    if options.reference:
-      self.appendField(FIELD_REFERENCE, 'REF**', )
+    font_size = 1
+    field_offset = 1.2 * font_size
+    if options.ref_mode != 'none':
+      hidden = options.ref_mode == 'hidden'
+      p = [0.5 * self.size[0], 0]
+      simpletransform.applyTransformToPoint(self.currentTransform(), p)
+      p[1] -= field_offset
+      self.appendField(FIELD_REFERENCE, 'REF**', p, 'F.SilkS', hidden, font_size)
+
+    if options.value_mode != 'none':
+      hidden = options.value_mode == 'hidden'
+      value = ''
+      if options.value_src == 'document':
+        title_node = self.document.xpath('//dc:title', namespaces=ix.NSS)[0]
+        if title_node is None or title_node.text is None or len(title_node.text) == 0:
+          abort('Document Properties/Metadata/Title is missing')
+        value = title_node.text
+      elif options.value_src == 'custom':
+        value = options.custom_value
+      else:
+        abort('Unhandled value-src')
+      p = [0.5 * self.size[0], self.size[1]]
+      simpletransform.applyTransformToPoint(self.currentTransform(), p)
+      p[1] += field_offset
+      self.appendField(FIELD_VALUE, value, p, 'F.SilkS', hidden, font_size)
 
   def appendPolygon(self, polygon, layer, width = 0.0):
     points = [PTS]
@@ -346,7 +380,12 @@ class KiCadFootprintBuilder(KiCadBuilder):
     # self.appendLine(bezier[0], bezier[1], layer, 0.5)
     # self.appendLine(bezier[1], bezier[2], layer, 0.5)
 
-  def appendField(self, field, value, position, layer, hidden, font_size, thickness):
+# (fp_text reference REF** (at -24.5 -23.5) (layer F.SilkS)
+#     (effects (font (size 1 1) (thickness 0.15)))
+# (fp_text reference REF** (at 0.000 -1.951) (layer F.SilkS)
+#     (effects (font (size 1.000 1.000)(thickness 0.150))))
+
+  def appendField(self, field, value, position, layer, hidden, font_size=1, thickness=0.15):
     field = [
       FP_TEXT,
       field,
@@ -372,7 +411,7 @@ def extractRings(path):
     ring = []
     for csp in sp:
       ring.append([csp[1][0], csp[1][1]])
-    ring.pop() # remove duplicate vertex
+    ring.pop() # remove duplicate, trailing vertex
     rings.append(Ring(ring))
   return rings
 
@@ -388,7 +427,6 @@ def probeRingContainment(rings):
       inside, outside = count_inside(r2.points, r1.points)
       if outside == 0:
         r1.containedIn.append(r2)
-
 
 def peelPolygons(rings):
   polygons = []

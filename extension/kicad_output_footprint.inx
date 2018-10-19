@@ -10,20 +10,42 @@
   <dependency type="executable" location="extensions">cspsubdiv.py</dependency>
   
   <param name="format" type="string" gui-hidden="true">footprint</pararm>
-  <param name="layer-mode" type="enum" gui-text="Layer Handling">
-    <item value="target">Target Layer</item>
-    <item value="document">Use Inkscape layers</item>
+  <param name="tab" type="notebook">
+    <page name="footprint_options" gui-text="Footprint Options">
+      <param name="layer-mode" type="enum" gui-text="Layer Handling">
+        <item value="target">Target Layer</item>
+        <item value="document">Use Inkscape layers</item>
+      </param>
+      <param name="target-layer" type="string" gui-text="Target Layer">F.SilkS</param>
+      <param name="description" type="string" gui-text="Description"/>
+      <param name="tags" type="string" gui-text="Tags">decal</param>
+
+      <param name="ref-mode" type="enum" gui-text="Reference Field">
+        <item value="hidden">Hidden</item>
+        <item value="visible">Visible</item>
+        <item value="none">None</item>
+      </param>
+
+      <param name="value-mode" type="enum" gui-text="Value Field">
+        <item value="hidden">Hidden</item>
+        <item value="visible">Visible</item>
+        <item value="none">None</item>
+      </param>
+      <param name="value-src" type="enum" gui-text="Value Source">
+        <item value="document">Document Properties: Title</item>
+        <item value="custom">Custom</item>
+      </param>
+      <param name="custom-value" type="string" gui-text="Custom Value"></param>
+
+      <param name="origin" type="enum" gui-text="Origin">
+        <item value="top_left">Top Left</item>
+        <item value="center">Center</item>
+      </param>
+      <param name="flatness" type="float" precision="3" min="0.001" max="10"
+             gui-text="Subdivision Flatness"
+             gui-description="Smaller values give finer subdivisions">0.1</param>
+    </page>
   </param>
-  <param name="target-layer" type="string" gui-text="Target Layer">F.SilkS</param>
-  <param name="description" type="string" gui-text="Description"/>
-  <param name="tags" type="string" gui-text="Tags">decal</param>
-  <param name="origin" type="enum" gui-text="Origin">
-    <item value="top_left">Top Left</item>
-    <item value="center">Center</item>
-  </param>
-  <param name="flatness" type="float" precision="2" min="0.01" max="10"
-         gui-text="Subdivision Flatness"
-         gui-description="Smaller values give finer subdivisions">0.1</param>
 
   <output>
     <extension>.kicad_mod</extension>
