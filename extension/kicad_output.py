@@ -12,22 +12,6 @@ CLOCKWISE = 1
 COUNTERCLOCKWISE = 2
 EPSILON = 1e-9
 
-# KiCad Mod S-Expression Constants
-MODULE = 'module'
-LAYER = 'layer'
-TEDIT = 'tedit'
-ATTR = 'attr'
-DESCR = 'descr'
-TAGS = 'tags'
-FP_POLY = 'fp_poly'
-FP_LINE = 'fp_line'
-FP_CURVE = 'fp_curve'
-START = 'start'
-END = 'end'
-PTS = 'pts'
-XY = 'xy'
-WIDTH = 'width'
-
 #==============================================================================
 
 class KiCadOutput(ix.Effect):
@@ -41,29 +25,24 @@ class KiCadOutput(ix.Effect):
     self.OptionParser.add_option('--origin', action='store')
     self.OptionParser.add_option('--flatness', action='store', type='float')
     self.OptionParser.add_option('--default-stroke', action='store', type='float', default=1)
+    self.OptionParser.add_option('--reference')
     self.layer = ''
     self.builder = None
 
   def effect(self):
     # ix.debug('options: {}'.format(self.options))
+    doc = self.document.getroot()
+    scale = 1 / self.unittouu('1mm')
+    w = self.unittouu(self.getDocumentWidth())
+    h = self.unittouu(self.getDocumentHeight())
     if self.options.format == 'footprint':
-      self.builder = KiCadFootprintBuilder(self.options)
+      self.builder = KiCadFootprintBuilder(doc, self.options, [w, h], scale)
     else:
       abort('Unhandled format "{}"'.format(self.options.format))
 
     if self.options.layer_mode == 'target':
       self.layer = self.options.target_layer
 
-    doc = self.document.getroot()
-    scale = 1 / self.unittouu('10mm')
-    w = self.unittouu(doc.xpath('@width', namespaces=ix.NSS)[0])
-    h = self.unittouu(doc.xpath('@height', namespaces=ix.NSS)[0])
-    dx = 0
-    dy = 0
-    if self.options.origin == 'center':
-      dx = -0.5 * scale * w
-      dy = -0.5 * scale * h
-    self.builder.pushTransform([[scale, 0.0, dx], [0.0, scale, dy]])
     self.processGroup(doc)
     self.builder.popTransform()
 
@@ -126,24 +105,27 @@ class KiCadOutput(ix.Effect):
       y = float(node.get('y', 0))
       width = float(node.get('width'))
       height = float(node.get('height'))
-      d = "m %s,%s %s,%s %s,%s %s,%s z".format(x, y, width, 0, 0, height, -width, 0)
+      d = "M {x} {y} h {w} v {h} h -{w} Z".format(x=x, y=y, w=width, h=height)
     elif node.tag == ix.addNS('line', 'svg'):
       x1 = float(node.get('x1', 0))
       x2 = float(node.get('x2', 0))
       y1 = float(node.get('y1', 0))
       y2 = float(node.get('y2', 0))
       d = "M %s,%s L %s,%s".format(x1, y1, x2, y2)
+      ix.debug(d)
     elif node.tag == ix.addNS('circle', 'svg'):
       cx = float(node.get('cx', 0))
       cy = float(node.get('cy', 0))
       r = float(node.get('r'))
       d = "m %s,%s a %s,%s 0 0 1 %s,%s %s,%s 0 0 1 %s,%s z".format(cx + r, cy, r, r, -2*r, 0, r, r, 2*r, 0)
+      ix.debug(d)
     elif node.tag == ix.addNS('ellipse','svg'):
       cx = float(node.get('cx', 0))
       cy = float(node.get('cy', 0))
       rx = float(node.get('rx'))
       ry = float(node.get('ry'))
       d = "m %s,%s a %s,%s 0 0 1 %s,%s %s,%s 0 0 1 %s,%s z".format(cx + rx, cy, rx, ry, -2*rx, 0, rx, ry, 2*rx, 0)
+      ix.debug(d)
 
     if not d:
       return
@@ -162,10 +144,19 @@ class KiCadOutput(ix.Effect):
 #==============================================================================
 
 class KiCadBuilder(object):
-  def __init__(self, options):
+  def __init__(self, document, options, size, scale):
+    self.document = document
     self.options = options
     self.expression = []
-    self.transformStack = []
+
+
+    dx = 0
+    dy = 0
+    if self.options.origin == 'center':
+      dx = -0.5 * scale * size[0]
+      dy = -0.5 * scale * size[1]
+
+    self.transformStack = [[[scale, 0.0, dx], [0.0, scale, dy]]]
 
   def output(self):
     return format_sexp(build_sexp(self.expression))
@@ -277,20 +268,51 @@ class KiCadBuilder(object):
     self.transformStack.pop()
 
 
+# KiCad Mod S-Expression Constants
+MODULE = 'module'
+LAYER = 'layer'
+TEDIT = 'tedit'
+ATTR = 'attr'
+DESCR = 'descr'
+TAGS = 'tags'
+FP_POLY = 'fp_poly'
+FP_LINE = 'fp_line'
+FP_CURVE = 'fp_curve'
+FP_TEXT = 'fp_text'
+START = 'start'
+END = 'end'
+PTS = 'pts'
+XY = 'xy'
+WIDTH = 'width'
+AT = 'at'
+HIDE = 'hide'
+EFFECTS = 'effects'
+FONT = 'font'
+SIZE = 'size'
+THICKNESS = 'thickness'
+
+FIELD_REFERENCE = 'reference'
+FIELD_VALUE = 'value'
+FIELD_USER = 'user'
+
 class KiCadFootprintBuilder(KiCadBuilder):
-  def __init__(self, options):
-    super(KiCadFootprintBuilder, self).__init__(options)
+  def __init__(self, document, options, size, scale):
+    super(KiCadFootprintBuilder, self).__init__(document, options, size, scale)
     self.expression = [
       MODULE, MODULE_NAME,
       [LAYER, 'F.Cu'],
       [TEDIT, timestamp()],
       [ATTR, 'smd']
     ]
+    T.foo()
     if options.description:
       self.expression.append([DESCR, options.description])
 
     if options.tags > 0:
       self.expression.append([TAGS, options.tags])
+
+    if options.reference:
+      self.appendField(FIELD_REFERENCE, 'REF**', )
 
   def appendPolygon(self, polygon, layer, width = 0.0):
     points = [PTS]
@@ -324,8 +346,25 @@ class KiCadFootprintBuilder(KiCadBuilder):
     # self.appendLine(bezier[0], bezier[1], layer, 0.5)
     # self.appendLine(bezier[1], bezier[2], layer, 0.5)
 
+  def appendField(self, field, value, position, layer, hidden, font_size, thickness):
+    field = [
+      FP_TEXT,
+      field,
+      value,
+      [AT, position[0], position[1]],
+      [LAYER, layer],
+      [EFFECTS, [FONT, [SIZE, font_size, font_size], [THICKNESS, thickness]]]
+    ]
+    if hidden:
+      field.append(HIDE)
+    self.expression.append(field)
+
 
 #==============================================================================
+class T:
+  @staticmethod
+  def foo():
+    pass
 
 def extractRings(path):
   rings = []
@@ -338,16 +377,17 @@ def extractRings(path):
   return rings
 
 def probeRingContainment(rings):
-  for r1 in rings:
-    for r2 in rings:
-      if r1 == r2:
-        continue
-      (inside, outside) = count_inside(r1.points, r2.points)
+  for i, r1 in enumerate(rings):
+    for r2 in rings[i+1:]:
+      inside, outside = count_inside(r1.points, r2.points)
       if inside != 0 and outside != 0:
         # TODO: Provide context
         abort('Rings of path intersect. outside: {} inside: {}'.format(outside, inside))
       if outside == 0:
         r2.containedIn.append(r1)
+      inside, outside = count_inside(r2.points, r1.points)
+      if outside == 0:
+        r1.containedIn.append(r2)
 
 
 def peelPolygons(rings):
